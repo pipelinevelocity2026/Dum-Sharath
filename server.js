@@ -176,7 +176,7 @@ function viewFor(room, p) {
       hintInfo: t.hints >= 1 ? { year: t.movie.year, era: t.movie.era } : null,
       feed: t.feed.slice(-6),
       // 4-choice answers go only to the acting team's guessers (never to the actor's rivals)
-      options: !isActor && s.online && t.status === 'running' && p.team === t.teamIdx
+      options: !isActor && s.online && p.team === t.teamIdx
         ? t.options.map((o) => ({ text: o, hidden: t.hidden.includes(o) }))
         : null,
       locked: t.locked.has(p.id),

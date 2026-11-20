@@ -308,9 +308,10 @@
       } else {
         const mine = !!myTeam;
         html = `<div class="stage"><div class="who">It’s <em>${esc(t.actorName)}</em>’s turn to act for <em>${esc(team.name)}</em>!</div>
-          <div class="hint">${mine ? (online ? '📹 Watch the camera, then tap your answer below – one try per movie!' : '🗣 Your team is guessing – shout out your answers!') : '🤐 Opponents are acting – watch quietly, no spoilers!'}</div>
+          <div class="hint">${mine ? (online ? '📹 Watch the camera, then tap your answer below – one try per movie!' : '🗣 Your team is guessing – shout out your answers!') : `🤐 Opponents are acting – watch quietly, no spoilers!${online ? ' Only ' + esc(team.name) + '’s guessers get answer options.' : ''}`}</div>
           ${t.status === 'ready' ? `<div class="hint">⏳ Waiting for ${esc(t.actorName)} to start the clock${t.actorConnected ? '' : ' (their phone looks offline)'}…</div>` : ''}</div>
           ${timerBlock}
+  
           ${hintsHtml}
           <div class="stage">${t.wordCount != null ? `<span class="badge" style="background:rgba(255,200,61,.18)">💡 Hint: ${t.wordCount} word${t.wordCount > 1 ? 's' : ''}</span>` : ''}
           <div class="tally"><span>✅ ${t.guessed} guessed so far</span></div></div>`;
@@ -330,8 +331,8 @@
     const tt = S.turn;
     const opts = S.phase === 'turn' && tt.options;
     setHTML($('g-guess'), opts
-      ? `<div class="stage hint" style="margin-top:10px">${tt.locked ? '🔒 You used your guess on this movie – wait for teammates' : '👇 Which movie is it? One try per movie!'}</div>
-         <div class="opts">${opts.map((o, i) => `<button class="opt ${o.hidden ? 'gone' : ''}" data-act="pick" data-i="${i}" ${o.hidden || tt.locked ? 'disabled' : ''}>${esc(o.text)}</button>`).join('')}</div>` : '');
+      ? `<div class="stage hint" style="margin-top:10px">${tt.status !== 'running' ? '⏳ Options unlock when ' + esc(tt.actorName) + ' starts the clock' : tt.locked ? '🔒 You used your guess on this movie – wait for teammates' : '👇 Which movie is it? One try per movie!'}</div>
+         <div class="opts">${opts.map((o, i) => `<button class="opt ${o.hidden ? 'gone' : ''}" data-act="pick" data-i="${i}" ${o.hidden || tt.locked || tt.status !== 'running' ? 'disabled' : ''}>${esc(o.text)}</button>`).join('')}</div>` : '');
     const feed = S.phase === 'turn' && S.settings.online && tt.feed ? tt.feed : [];
     setHTML($('g-feed'), feed.length
       ? `<ul class="res feed">${feed.slice().reverse().map((f) => `<li class="${f.correct ? 'guessed' : ''}"><span><b>${esc(f.name)}</b>: ${esc(f.text)}</span><span>${f.correct ? '✅' : ''}</span></li>`).join('')}</ul>` : '');
