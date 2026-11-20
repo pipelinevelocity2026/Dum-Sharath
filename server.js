@@ -39,7 +39,7 @@ function createRoom() {
   return {
     code: genCode(),
     hostId: null,
-    settings: { duration: 90, difficulty: 'all', era: 'all', teams: 2, rounds: 2, showWordCount: true },
+    settings: { duration: 90, difficulty: 'all', era: 'all', teams: 2, rounds: 2, showWordCount: true, online: true },
     players: new Map(),
     phase: 'lobby', // lobby | turn | between | ended
     scores: [0, 0, 0, 0],
@@ -87,6 +87,34 @@ function drawMovie(room) {
   const m = fresh[crypto.randomInt(fresh.length)];
   room.used.add(m.title);
   return m;
+}
+
+const norm = (x) => String(x).toLowerCase().replace(/&/g, 'and').replace(/^the\s+/, '').replace(/[^a-z0-9]/g, '');
+function lev(a, b) {
+  const m = a.length, n = b.length;
+  let prev = Array.from({ length: n + 1 }, (_, j) => j);
+  for (let i = 1; i <= m; i++) {
+    const cur = [i];
+    for (let j = 1; j <= n; j++) cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+    prev = cur;
+  }
+  return prev[n];
+}
+function isMatch(guess, title) {
+  const g = norm(guess), t = norm(title);
+  if (!g) return false;
+  return g === t || (t.length >= 7 && lev(g, t) <= Math.floor(t.length / 8));
+}
+function pattern(title) {
+  return title.split(/\s+/).map((w) => w.split('').map((c, i) => (i === 0 || !/[A-Za-z0-9]/.test(c) ? c : '_')).join(' ')).join('   /   ');
+}
+function award(room, guesser) {
+  const t = room.turn;
+  const pts = t.hints > 0 ? 1 : 2;
+  t.items.push({ movie: t.movie, result: 'guessed', points: pts, guesser: guesser || null });
+  room.scores[t.teamIdx] += pts;
+  t.movie = drawMovie(room);
+  t.hints = 0;
 }
 
 function pickActor(room, teamIdx, commit) {
@@ -148,6 +176,10 @@ function viewFor(room, p) {
       skipped: t.items.filter((i) => i.result === 'skipped').length,
       wordCount: isActor || s.showWordCount ? t.movie.wordCount : null,
       movie: isActor ? t.movie : null,
+      hints: t.hints,
+      hintInfo: t.hints >= 1 ? { year: t.movie.year, era: t.movie.era } : null,
+      pattern: t.hints >= 2 ? pattern(t.movie.title) : null,
+      feed: t.feed.slice(-6),
     };
   }
   if (room.phase === 'between' || room.phase === 'ended') {
@@ -183,7 +215,7 @@ function beginTurn(room) {
   }
   if (!actor) return endGame(room);
   room.phase = 'turn';
-  room.turn = { teamIdx, actorId: actor.id, status: 'ready', endsAt: 0, duration: room.settings.duration, movie: drawMovie(room), items: [] };
+  room.turn = { teamIdx, actorId: actor.id, status: 'ready', endsAt: 0, duration: room.settings.duration, movie: drawMovie(room), items: [], hints: 0, feed: [] };
   broadcast(room);
 }
 
@@ -203,7 +235,7 @@ function closeTurnItems(room, reason) {
   else room.used.delete(t.movie.title); // never acted: put back in the deck
   const actor = room.players.get(t.actorId);
   t.items.forEach((i) =>
-    room.history.push({ title: i.movie.title, year: i.movie.year, result: i.result, team: TEAM_NAMES[t.teamIdx], teamIdx: t.teamIdx, actor: actor ? actor.name : '?' })
+    room.history.push({ title: i.movie.title, year: i.movie.year, result: i.result, points: i.points || 0, guesser: i.guesser || null, team: TEAM_NAMES[t.teamIdx], teamIdx: t.teamIdx, actor: actor ? actor.name : '?' })
   );
 }
 
@@ -219,8 +251,8 @@ function finishTurn(room, reason) {
     teamName: TEAM_NAMES[t.teamIdx],
     actorName: actor ? actor.name : '?',
     reason,
-    gained: t.items.filter((i) => i.result === 'guessed').length,
-    items: t.items.map((i) => ({ title: i.movie.title, year: i.movie.year, result: i.result })),
+    gained: t.items.reduce((n, i) => n + (i.points || 0), 0),
+    items: t.items.map((i) => ({ title: i.movie.title, year: i.movie.year, result: i.result, points: i.points || 0, guesser: i.guesser || null })),
     final: room.turnsDone >= room.totalTurns,
   };
   room.turn = null;
@@ -369,6 +401,7 @@ io.on('connection', (socket) => {
       });
     } else if (key === 'rounds' && +value >= 1 && +value <= 5) s.rounds = +value;
     else if (key === 'showWordCount') s.showWordCount = !!value;
+    else if (key === 'online') s.online = !!value;
     else return fail(cb, 'Invalid setting');
     ok(cb);
     broadcast(room);
@@ -426,9 +459,8 @@ io.on('connection', (socket) => {
     if (!c) return;
     const { room } = c;
     if (room.turn.status !== 'running') return fail(cb, 'Start the timer first');
-    room.turn.items.push({ movie: room.turn.movie, result: 'guessed' });
-    room.scores[room.turn.teamIdx]++;
-    room.turn.movie = drawMovie(room);
+    award(room, null);
+    room.turn.feed.push({ name: '🎤 Heard aloud', text: 'Correct!', correct: true });
     ok(cb);
     broadcast(room);
   });
@@ -438,7 +470,40 @@ io.on('connection', (socket) => {
     const { room } = c;
     if (room.turn.status === 'running') room.turn.items.push({ movie: room.turn.movie, result: 'skipped' });
     room.turn.movie = drawMovie(room);
+    room.turn.hints = 0;
     ok(cb);
+    broadcast(room);
+  });
+  socket.on('hint', (_d, cb) => {
+    const c = actorCtx(cb);
+    if (!c) return;
+    const { room } = c;
+    if (!room.settings.online) return fail(cb, 'Hints are only in online mode');
+    if (room.turn.status !== 'running') return fail(cb, 'Start the timer first');
+    if (room.turn.hints >= 2) return fail(cb, 'No more hints for this movie');
+    room.turn.hints++;
+    ok(cb);
+    broadcast(room);
+  });
+  socket.on('guess', (d, cb) => {
+    const c = ctx(socket);
+    if (!c) return fail(cb, 'Not in a room');
+    const { room, player } = c;
+    const t = room.turn;
+    if (room.phase !== 'turn' || !t || t.status !== 'running') return fail(cb, 'No round in progress');
+    if (!room.settings.online) return fail(cb, 'Typed guesses are off');
+    if (player.id === t.actorId) return fail(cb, 'The actor cannot guess');
+    if (player.team !== t.teamIdx) return fail(cb, 'Only the acting team can guess');
+    const now = Date.now();
+    if (player.lastGuess && now - player.lastGuess < 600) return fail(cb, 'Slow down!');
+    player.lastGuess = now;
+    const text = String((d && d.text) || '').trim().slice(0, 60);
+    if (!text) return fail(cb, 'Type a guess');
+    const correct = isMatch(text, t.movie.title);
+    t.feed.push({ name: player.name, text: correct ? 'got it! 🎉' : text, correct });
+    if (t.feed.length > 20) t.feed.shift();
+    if (correct) award(room, player.name);
+    ok(cb, { correct });
     broadcast(room);
   });
   socket.on('endTurn', (_d, cb) => {
