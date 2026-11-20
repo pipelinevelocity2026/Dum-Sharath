@@ -151,7 +151,7 @@
     else if (act === 'guessed') call('guessed');
     else if (act === 'skip') call('skip');
     else if (act === 'hint') call('hint');
-    else if (act === 'guess') sendGuess();
+    else if (act === 'pick') pick(+b.dataset.i);
     else if (act === 'endTurn') call('endTurn');
     else if (act === 'override') { if (confirm('Skip this actor and pick the next player on their team?')) call('override'); }
     else if (act === 'next') call('next');
@@ -165,18 +165,14 @@
     call('settings', { key, value: (key === 'showWordCount' || key === 'online') ? el.value === '1' : el.value });
   });
   document.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' && e.target.id === 'guess-in') sendGuess();
     if (e.key === 'Enter' && e.target.id === 'code-in') document.querySelector('[data-act="join"]').click();
   });
 
-  async function sendGuess() {
-    const inp = $('guess-in');
-    if (!inp || !inp.value.trim()) return;
-    const text = inp.value;
-    inp.value = '';
-    const r = await call('guess', { text });
-    if (r.ok && !r.correct) toast('Not quite – keep trying!');
-    inp.focus();
+  async function pick(i) {
+    const o = S && S.turn && S.turn.options && S.turn.options[i];
+    if (!o || o.hidden || S.turn.locked) return;
+    const r = await call('guess', { choice: o.text });
+    if (r.ok && !r.correct) toast('Wrong! You’re out for this movie.');
   }
   function enter(r, name) {
     session = { code: r.code, playerId: r.playerId, name };
@@ -246,7 +242,7 @@
           <div><label>Difficulty</label><select data-setting="difficulty">${['all', 'easy', 'medium', 'hard'].map((v) => opt(v, v[0].toUpperCase() + v.slice(1), s.difficulty)).join('')}</select></div>
           <div><label>Era</label><select data-setting="era">${eras.map((v) => opt(v, eraLabel(v), s.era)).join('')}</select></div>
           <div><label>Turns per team</label><select data-setting="rounds">${[1, 2, 3, 4, 5].map((v) => opt(v, v, s.rounds)).join('')}</select></div>
-          <div class="full"><label>Online mode (typed guesses + actor hints)</label><select data-setting="online">${opt(1, 'On – for video calls', s.online ? 1 : 0)}${opt(0, 'Off – everyone in one room', s.online ? 1 : 0)}</select></div>
+          <div class="full"><label>Online mode (4-choice answers + actor hints)</label><select data-setting="online">${opt(1, 'On – for video calls', s.online ? 1 : 0)}${opt(0, 'Off – everyone in one room', s.online ? 1 : 0)}</select></div>
           <div><label>Show word-count hint</label><select data-setting="showWordCount">${opt(1, 'Yes', s.showWordCount ? 1 : 0)}${opt(0, 'No', s.showWordCount ? 1 : 0)}</select></div>
         </div></div>`
       : `<div class="card"><h3>⚙️ Game settings</h3><div class="sumline">
@@ -295,24 +291,24 @@
       const wc = t.wordCount != null ? `<span class="badge">${t.wordCount} word${t.wordCount > 1 ? 's' : ''}</span>` : '';
       const online = S.settings.online;
       const hintsHtml = (t.hintInfo ? `<div class="stage"><span class="badge" style="background:rgba(255,200,61,.18)">📅 ${t.hintInfo.year} · ${esc(t.hintInfo.era)}</span></div>` : '')
-        + (t.pattern ? `<div class="pattern">${esc(t.pattern)}</div>` : '');
+        + '';
       if (iAmActor) {
         const m = t.movie;
         const card = `<div class="movie"><small>Your secret movie 🤫</small><h2>${esc(m.title)}</h2>
           <div class="badges"><span class="badge">${m.year}</span>${wc}<span class="badge">${esc(m.difficulty)}</span></div></div>`;
         html = t.status === 'ready'
           ? `<div class="stage"><div class="who">🎭 You’re acting for <em>${esc(team.name)}</em>!</div></div>${card}
-             <div class="stage hint">${online ? '📹 Act with hand gestures on camera. Don’t say any word from the title. Use 💡 hints if your team is stuck.' : 'Read it, then start the clock. No talking, no pointing at objects!'}</div>
+             <div class="stage hint">${online ? '📹 Act with hand gestures on camera. Don’t say any word from the title. Your team picks from 4 options on their phones – use 💡 hints if they’re stuck.' : 'Read it, then start the clock. No talking, no pointing at objects!'}</div>
              <button class="btn good" data-act="startTimer">▶ Start Timer (${t.duration}s)</button>
              <button class="btn sec" data-act="skip">⏭ Skip Movie</button>`
           : `${timerBlock}${card}${hintsHtml}<div class="tally"><span>✅ ${t.guessed} guessed</span><span>⏭ ${t.skipped} skipped</span></div>
-             ${online ? `<button class="btn sec" data-act="hint" ${t.hints >= 2 ? 'disabled' : ''}>💡 ${t.hints === 0 ? 'Hint 1: show year & era' : t.hints === 1 ? 'Hint 2: show letters' : 'No more hints'} (−1 point)</button>` : ''}
+             ${online ? `<button class="btn sec" data-act="hint" ${t.hints >= 2 ? 'disabled' : ''}>💡 ${t.hints === 0 ? 'Hint 1: show year & era' : t.hints === 1 ? 'Hint 2: remove 2 wrong options' : 'No more hints'} (−1 point)</button>` : ''}
              <button class="btn good" data-act="guessed">Guessed It! ${t.hints ? '+1' : '+2'}</button>
              <div class="row"><button class="btn sec" data-act="skip">⏭ Skip Movie</button><button class="btn bad" data-act="endTurn">⏹ End Turn</button></div>`;
       } else {
         const mine = !!myTeam;
         html = `<div class="stage"><div class="who">It’s <em>${esc(t.actorName)}</em>’s turn to act for <em>${esc(team.name)}</em>!</div>
-          <div class="hint">${mine ? (online ? '📹 Watch the camera! Say your guess aloud or type it below.' : '🗣 Your team is guessing – shout out your answers!') : '🤐 Opponents are acting – watch quietly, no spoilers!'}</div>
+          <div class="hint">${mine ? (online ? '📹 Watch the camera, then tap your answer below – one try per movie!' : '🗣 Your team is guessing – shout out your answers!') : '🤐 Opponents are acting – watch quietly, no spoilers!'}</div>
           ${t.status === 'ready' ? `<div class="hint">⏳ Waiting for ${esc(t.actorName)} to start the clock${t.actorConnected ? '' : ' (their phone looks offline)'}…</div>` : ''}</div>
           ${timerBlock}
           ${hintsHtml}
@@ -332,9 +328,10 @@
     setHTML($('g-stage'), html);
 
     const tt = S.turn;
-    const canGuess = S.phase === 'turn' && S.settings.online && tt.status === 'running' && tt.actorId !== S.youId && S.teams[tt.teamIdx].players.some((p) => p.id === S.youId);
-    setHTML($('g-guess'), canGuess
-      ? '<div class="row" style="margin-top:12px"><input id="guess-in" maxlength="60" placeholder="Type your guess…" autocomplete="off" enterkeyhint="send"><button class="btn small" style="flex:0 0 auto" data-act="guess">Send</button></div>' : '');
+    const opts = S.phase === 'turn' && tt.options;
+    setHTML($('g-guess'), opts
+      ? `<div class="stage hint" style="margin-top:10px">${tt.locked ? '🔒 You used your guess on this movie – wait for teammates' : '👇 Which movie is it? One try per movie!'}</div>
+         <div class="opts">${opts.map((o, i) => `<button class="opt ${o.hidden ? 'gone' : ''}" data-act="pick" data-i="${i}" ${o.hidden || tt.locked ? 'disabled' : ''}>${esc(o.text)}</button>`).join('')}</div>` : '');
     const feed = S.phase === 'turn' && S.settings.online && tt.feed ? tt.feed : [];
     setHTML($('g-feed'), feed.length
       ? `<ul class="res feed">${feed.slice().reverse().map((f) => `<li class="${f.correct ? 'guessed' : ''}"><span><b>${esc(f.name)}</b>: ${esc(f.text)}</span><span>${f.correct ? '✅' : ''}</span></li>`).join('')}</ul>` : '');

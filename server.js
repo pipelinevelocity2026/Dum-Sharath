@@ -89,32 +89,28 @@ function drawMovie(room) {
   return m;
 }
 
-const norm = (x) => String(x).toLowerCase().replace(/&/g, 'and').replace(/^the\s+/, '').replace(/[^a-z0-9]/g, '');
-function lev(a, b) {
-  const m = a.length, n = b.length;
-  let prev = Array.from({ length: n + 1 }, (_, j) => j);
-  for (let i = 1; i <= m; i++) {
-    const cur = [i];
-    for (let j = 1; j <= n; j++) cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
-    prev = cur;
-  }
-  return prev[n];
+function makeOptions(movie) {
+  const cands = MOVIES.filter((m) => m.title !== movie.title)
+    .map((m) => ({ m, score: Math.abs(m.wordCount - movie.wordCount) * 2 + Math.abs(m.year - movie.year) / 10 + Math.random() * 4 }))
+    .sort((a, b) => a.score - b.score)
+    .slice(0, 12)
+    .map((x) => x.m.title);
+  shuffleArr(cands);
+  return shuffleArr([movie.title, ...cands.slice(0, 3)]);
 }
-function isMatch(guess, title) {
-  const g = norm(guess), t = norm(title);
-  if (!g) return false;
-  return g === t || (t.length >= 7 && lev(g, t) <= Math.floor(t.length / 8));
-}
-function pattern(title) {
-  return title.split(/\s+/).map((w) => w.split('').map((c, i) => (i === 0 || !/[A-Za-z0-9]/.test(c) ? c : '_')).join(' ')).join('   /   ');
+function setMovie(room, t) {
+  t.movie = drawMovie(room);
+  t.hints = 0;
+  t.options = makeOptions(t.movie);
+  t.hidden = [];
+  t.locked = new Set();
 }
 function award(room, guesser) {
   const t = room.turn;
   const pts = t.hints > 0 ? 1 : 2;
   t.items.push({ movie: t.movie, result: 'guessed', points: pts, guesser: guesser || null });
   room.scores[t.teamIdx] += pts;
-  t.movie = drawMovie(room);
-  t.hints = 0;
+  setMovie(room, t);
 }
 
 function pickActor(room, teamIdx, commit) {
@@ -178,8 +174,12 @@ function viewFor(room, p) {
       movie: isActor ? t.movie : null,
       hints: t.hints,
       hintInfo: t.hints >= 1 ? { year: t.movie.year, era: t.movie.era } : null,
-      pattern: t.hints >= 2 ? pattern(t.movie.title) : null,
       feed: t.feed.slice(-6),
+      // 4-choice answers go only to the acting team's guessers (never to the actor's rivals)
+      options: !isActor && s.online && t.status === 'running' && p.team === t.teamIdx
+        ? t.options.map((o) => ({ text: o, hidden: t.hidden.includes(o) }))
+        : null,
+      locked: t.locked.has(p.id),
     };
   }
   if (room.phase === 'between' || room.phase === 'ended') {
@@ -215,7 +215,8 @@ function beginTurn(room) {
   }
   if (!actor) return endGame(room);
   room.phase = 'turn';
-  room.turn = { teamIdx, actorId: actor.id, status: 'ready', endsAt: 0, duration: room.settings.duration, movie: drawMovie(room), items: [], hints: 0, feed: [] };
+  room.turn = { teamIdx, actorId: actor.id, status: 'ready', endsAt: 0, duration: room.settings.duration, movie: null, items: [], hints: 0, feed: [] };
+  setMovie(room, room.turn);
   broadcast(room);
 }
 
@@ -469,8 +470,7 @@ io.on('connection', (socket) => {
     if (!c) return;
     const { room } = c;
     if (room.turn.status === 'running') room.turn.items.push({ movie: room.turn.movie, result: 'skipped' });
-    room.turn.movie = drawMovie(room);
-    room.turn.hints = 0;
+    setMovie(room, room.turn);
     ok(cb);
     broadcast(room);
   });
@@ -481,7 +481,9 @@ io.on('connection', (socket) => {
     if (!room.settings.online) return fail(cb, 'Hints are only in online mode');
     if (room.turn.status !== 'running') return fail(cb, 'Start the timer first');
     if (room.turn.hints >= 2) return fail(cb, 'No more hints for this movie');
-    room.turn.hints++;
+    const t = room.turn;
+    t.hints++;
+    if (t.hints === 2) t.hidden = shuffleArr(t.options.filter((o) => o !== t.movie.title)).slice(0, 2);
     ok(cb);
     broadcast(room);
   });
@@ -491,18 +493,21 @@ io.on('connection', (socket) => {
     const { room, player } = c;
     const t = room.turn;
     if (room.phase !== 'turn' || !t || t.status !== 'running') return fail(cb, 'No round in progress');
-    if (!room.settings.online) return fail(cb, 'Typed guesses are off');
+    if (!room.settings.online) return fail(cb, 'Choices are off');
     if (player.id === t.actorId) return fail(cb, 'The actor cannot guess');
     if (player.team !== t.teamIdx) return fail(cb, 'Only the acting team can guess');
-    const now = Date.now();
-    if (player.lastGuess && now - player.lastGuess < 600) return fail(cb, 'Slow down!');
-    player.lastGuess = now;
-    const text = String((d && d.text) || '').trim().slice(0, 60);
-    if (!text) return fail(cb, 'Type a guess');
-    const correct = isMatch(text, t.movie.title);
-    t.feed.push({ name: player.name, text: correct ? 'got it! 🎉' : text, correct });
+    if (t.locked.has(player.id)) return fail(cb, 'You already used your guess on this movie');
+    const choice = String((d && d.choice) || '');
+    if (!t.options.includes(choice) || t.hidden.includes(choice)) return fail(cb, 'Pick one of the options');
+    const correct = choice === t.movie.title;
+    if (correct) {
+      t.feed.push({ name: player.name, text: 'got it! 🎉', correct: true });
+      award(room, player.name);
+    } else {
+      t.locked.add(player.id);
+      t.feed.push({ name: player.name, text: `picked “${choice}” ❌`, correct: false });
+    }
     if (t.feed.length > 20) t.feed.shift();
-    if (correct) award(room, player.name);
     ok(cb, { correct });
     broadcast(room);
   });
